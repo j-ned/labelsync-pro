@@ -1,0 +1,56 @@
+name: 🔎 Lint configuration
+
+on:
+  pull_request:
+    paths:
+      - '.github/config/**'
+      - '.github/workflows/lint.yml'
+  push:
+    branches: [master]
+    paths:
+      - '.github/config/**'
+  workflow_dispatch:
+
+jobs:
+  schema:
+    name: Validate JSON schemas
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🟢 Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 📦 Install ajv-cli
+        run: npm install -g ajv-cli@5 ajv-formats@3
+
+      - name: ✅ Validate labels.json
+        run: |
+          ajv validate \
+            -s .github/config/labels.schema.json \
+            -d .github/config/labels.json \
+            --strict=false \
+            --spec=draft2020
+
+      - name: ✅ Validate exclude.json
+        if: hashFiles('.github/config/exclude.json') != ''
+        run: |
+          ajv validate \
+            -s .github/config/exclude.schema.json \
+            -d .github/config/exclude.json \
+            --strict=false \
+            --spec=draft2020
+
+      - name: ✅ Vérifier l'unicité des noms de labels
+        run: |
+          DUPS=$(jq -r '[.[].name] | group_by(.) | map(select(length > 1)) | flatten | unique[]' \
+                 .github/config/labels.json)
+          if [ -n "$DUPS" ]; then
+            echo "❌ Noms de labels en doublon :" >&2
+            echo "$DUPS" >&2
+            exit 1
+          fi
+          echo "✅ Aucun doublon de nom"

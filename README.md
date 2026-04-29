@@ -14,11 +14,14 @@
 
 ## Fonctionnalités
 
-- **Synchronisation automatique des étiquettes** : Applique automatiquement un ensemble standardisé d'étiquettes au dernier repository GitHub créé.
-- **Exécution programmée** : S'exécute automatiquement chaque jour à 19h15 ou peut être déclenché manuellement.
-- **Optimisation des performances** : Ne traite que le repository le plus récemment créé et ignore ceux qui ont déjà toutes les étiquettes requises.
-- **Gestion intelligente des étiquettes** : Supprime les étiquettes obsolètes et ajoute uniquement les nouvelles étiquettes manquantes.
-- **Personnalisation facile** : Configuration simple via un fichier JSON pour définir vos propres étiquettes.
+- **Synchronisation automatique des étiquettes** : Applique un ensemble standardisé d'étiquettes sur **tous** vos repositories non-archivés (mode `all`) ou uniquement sur le dernier créé (mode `latest`).
+- **Exécution programmée** : S'exécute automatiquement chaque jour à **19h15 UTC** (= 20h15 FR hiver / 21h15 FR été) ou peut être déclenchée manuellement.
+- **Parallélisation** : Traite jusqu'à 5 repositories en parallèle via `matrix`, avec `fail-fast: false`.
+- **Mode dry-run** : Simulez les changements sans les appliquer (`workflow_dispatch` → `dry_run: true`).
+- **Opt-out par repo** : Excluez un repository soit en lui ajoutant le **topic GitHub `no-labelsync`**, soit en le listant dans `.github/config/exclude.json`.
+- **Réutilisable** : Appelable comme *reusable workflow* depuis n'importe quel autre repo (`workflow_call`).
+- **Validation** : `labels.json` et `exclude.json` sont validés contre un JSON Schema sur chaque PR (workflow `lint.yml`).
+- **Personnalisation facile** : Configuration via un fichier JSON pour définir vos propres étiquettes.
 
 ## Étiquettes prédéfinies
 
@@ -42,25 +45,54 @@ Le workflow inclut un ensemble complet d'étiquettes prédéfinies pour différe
    ```
 
 2. **Configurer le token GitHub** :
-   - Créez un token GitHub avec les permissions `repo` complètes
-   - Ajoutez ce token comme secret dans votre repository sous le nom `LABELGITHUB_TOKEN`
+   - **Recommandé** : créez un *fine-grained PAT* avec accès à tous vos repos et les permissions `Metadata: Read` + `Issues: Read & Write` (suffisant pour gérer les labels).
+   - Alternative : un *classic PAT* avec scope `repo` complet (plus de droits que nécessaire).
+   - Ajoutez ce token comme secret dans votre repository sous le nom `LABELGITHUB_TOKEN`.
 
 3. **Personnaliser les étiquettes (optionnel)** :
-   - Modifiez le fichier `.github/config/labels.json` selon vos besoins
+   - Modifiez le fichier `.github/config/labels.json` selon vos besoins.
+   - Ajoutez les repos à exclure dans `.github/config/exclude.json` (format `owner/name`).
 
 ## Utilisation
 
 ### Exécution automatique
 
-Le workflow s'exécute automatiquement chaque jour à 19h15 pour synchroniser les étiquettes sur votre repository le plus récemment créé.
+Le workflow s'exécute automatiquement chaque jour à **19h15 UTC** pour synchroniser les étiquettes sur **tous vos repositories non-archivés** (hors exclusions).
 
 ### Exécution manuelle
 
 Vous pouvez également déclencher le workflow manuellement :
 
 1. Accédez à l'onglet "Actions" de votre repository GitHub
-2. Sélectionnez le workflow "Synchronisation des Labels sur le Dernier Repo Créé"
-3. Cliquez sur "Run workflow"
+2. Sélectionnez le workflow "Synchronisation des Labels"
+3. Cliquez sur "Run workflow" et choisissez :
+   - **mode** : `all` (tous les repos) ou `latest` (uniquement le dernier créé)
+   - **dry_run** : `true` pour simuler sans appliquer
+
+### Réutilisable depuis un autre repository
+
+Ce workflow peut être appelé depuis n'importe quel repo via `workflow_call` :
+
+```yaml
+jobs:
+  labels:
+    uses: djoudj-dev/labelsync-pro/.github/workflows/manage-labels.yml@master
+    with:
+      mode: all
+      dry_run: false
+      labels_path: .github/config/labels.json   # chemin dans VOTRE repo
+    secrets:
+      LABELGITHUB_TOKEN: ${{ secrets.LABELGITHUB_TOKEN }}
+```
+
+> 💡 Pour la stabilité, pinnez sur un tag ou un SHA plutôt que sur `@master`.
+
+### Exclure un repository
+
+Deux méthodes :
+
+- **Topic GitHub** : ajoutez le topic `no-labelsync` à votre repo (Settings → Topics).
+- **Fichier d'exclusion** : ajoutez le `owner/name` dans `.github/config/exclude.json`.
 
 ## Configuration
 
@@ -101,11 +133,14 @@ Ce projet est libre d'utilisation.
 
 ## Features
 
-- **Automatic label synchronization**: Automatically applies a standardized set of labels to the latest created GitHub repository.
-- **Scheduled execution**: Runs automatically every day at 7:15 PM or can be triggered manually.
-- **Performance optimization**: Only processes the most recently created repository and ignores those that already have all required labels.
-- **Smart label management**: Removes obsolete labels and adds only missing new labels.
-- **Easy customization**: Simple configuration via a JSON file to define your own labels.
+- **Automatic label synchronization**: Applies a standardized set of labels to **all** your non-archived repositories (`all` mode) or only the most recently created one (`latest` mode).
+- **Scheduled execution**: Runs automatically every day at **19:15 UTC** or can be triggered manually.
+- **Parallel execution**: Processes up to 5 repositories in parallel via `matrix`, with `fail-fast: false`.
+- **Dry-run mode**: Simulate changes without applying them (`workflow_dispatch` → `dry_run: true`).
+- **Per-repo opt-out**: Skip a repository either by adding the **`no-labelsync` GitHub topic** or by listing it in `.github/config/exclude.json`.
+- **Reusable**: Callable as a *reusable workflow* from any other repo (`workflow_call`).
+- **Validation**: `labels.json` and `exclude.json` are validated against a JSON Schema on every PR (`lint.yml` workflow).
+- **Easy customization**: Simple JSON-based configuration.
 
 ## Predefined Labels
 
@@ -129,25 +164,54 @@ The workflow includes a comprehensive set of predefined labels for different typ
    ```
 
 2. **Configure GitHub token**:
-   - Create a GitHub token with full `repo` permissions
-   - Add this token as a secret in your repository under the name `LABELGITHUB_TOKEN`
+   - **Recommended**: create a *fine-grained PAT* with access to all your repos and the `Metadata: Read` + `Issues: Read & Write` permissions (sufficient for label management).
+   - Alternative: a *classic PAT* with full `repo` scope (more permissions than needed).
+   - Add this token as a secret in your repository under the name `LABELGITHUB_TOKEN`.
 
 3. **Customize labels (optional)**:
-   - Modify the `.github/config/labels.json` file according to your needs
+   - Modify the `.github/config/labels.json` file according to your needs.
+   - Add repos to skip in `.github/config/exclude.json` (`owner/name` format).
 
 ## Usage
 
 ### Automatic execution
 
-The workflow runs automatically every day at 7:15 PM to synchronize labels on your most recently created repository.
+The workflow runs automatically every day at **19:15 UTC** to synchronize labels on **all your non-archived repositories** (excluding skipped ones).
 
 ### Manual execution
 
 You can also trigger the workflow manually:
 
 1. Go to the "Actions" tab of your GitHub repository
-2. Select the "Label Synchronization on Latest Created Repo" workflow
-3. Click "Run workflow"
+2. Select the "Synchronisation des Labels" workflow
+3. Click "Run workflow" and choose:
+   - **mode**: `all` (every repo) or `latest` (only the most recently created)
+   - **dry_run**: `true` to simulate without applying
+
+### Reusable from another repository
+
+This workflow can be called from any repo via `workflow_call`:
+
+```yaml
+jobs:
+  labels:
+    uses: djoudj-dev/labelsync-pro/.github/workflows/manage-labels.yml@master
+    with:
+      mode: all
+      dry_run: false
+      labels_path: .github/config/labels.json   # path inside YOUR repo
+    secrets:
+      LABELGITHUB_TOKEN: ${{ secrets.LABELGITHUB_TOKEN }}
+```
+
+> 💡 For stability, pin to a tag or SHA rather than `@master`.
+
+### Skipping a repository
+
+Two options:
+
+- **GitHub topic**: add the `no-labelsync` topic to your repo (Settings → Topics).
+- **Exclusion file**: add `owner/name` to `.github/config/exclude.json`.
 
 ## Configuration
 

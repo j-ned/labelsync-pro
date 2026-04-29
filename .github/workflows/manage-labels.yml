@@ -1,113 +1,152 @@
-name: "Synchronisation des Labels sur le Dernier Repo Créé"
+name: "Synchronisation des Labels"
 
 on:
   schedule:
-    - cron: "15 19 * * *"  # Exécute chaque jour à 19h
+    # 19h15 UTC quotidien (= 20h15 FR hiver / 21h15 FR été)
+    - cron: "15 19 * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Cible des repos"
+        type: choice
+        options: [all, latest]
+        default: all
+      dry_run:
+        description: "Simulation sans appliquer les changements"
+        type: boolean
+        default: false
   repository_dispatch:
     types: [refresh]
+  workflow_call:
+    inputs:
+      mode:
+        description: "Cible: 'all' tous les repos non-archivés, 'latest' uniquement le dernier créé"
+        type: string
+        default: all
+      dry_run:
+        description: "Simulation sans appliquer les changements"
+        type: boolean
+        default: false
+      labels_path:
+        description: "Chemin vers le fichier labels.json"
+        type: string
+        default: .github/config/labels.json
+      exclude_path:
+        description: "Chemin vers exclude.json (optionnel)"
+        type: string
+        default: .github/config/exclude.json
+    secrets:
+      LABELGITHUB_TOKEN:
+        required: true
+
+concurrency:
+  group: labelsync-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
-  sync-labels:
+  list-repos:
+    name: 📋 Lister les repos cibles
     runs-on: ubuntu-latest
-
+    outputs:
+      repos: ${{ steps.collect.outputs.repos }}
+      count: ${{ steps.collect.outputs.count }}
     steps:
-      - name: 📥 Checkout repository
+      - name: 📥 Checkout
         uses: actions/checkout@v4
 
-      - name: 📂 Vérifier la présence du fichier labels.json
+      - name: 📂 Vérifier le fichier labels
+        env:
+          LABELS_PATH: ${{ inputs.labels_path || '.github/config/labels.json' }}
         run: |
-          if [ ! -f .github/config/labels.json ]; then
-            echo "❌ labels.json n'existe pas !"
+          set -euo pipefail
+          if [ ! -f "$LABELS_PATH" ]; then
+            echo "❌ $LABELS_PATH introuvable" >&2
             exit 1
+          fi
+          jq -e 'type == "array" and length > 0' "$LABELS_PATH" > /dev/null || {
+            echo "❌ $LABELS_PATH n'est pas un tableau JSON non vide" >&2
+            exit 1
+          }
+          echo "✅ $LABELS_PATH OK ($(jq 'length' "$LABELS_PATH") labels)"
+
+      - name: 🔎 Collecter les repos cibles
+        id: collect
+        env:
+          GH_TOKEN: ${{ secrets.LABELGITHUB_TOKEN }}
+          MODE: ${{ inputs.mode || 'all' }}
+          EXCLUDE_PATH: ${{ inputs.exclude_path || '.github/config/exclude.json' }}
+        run: |
+          set -euo pipefail
+          echo "🔍 Récupération des repos (mode=$MODE)..."
+
+          # Tri par date de création desc, ignore les archivés et les repos taggués 'no-labelsync'
+          gh api 'user/repos?type=owner&sort=created&direction=desc&per_page=100' --paginate \
+            --jq '[.[] | select(.archived == false) | select((.topics // []) | index("no-labelsync") | not) | .full_name]' \
+            > candidates.json
+
+          if [ -f "$EXCLUDE_PATH" ]; then
+            echo "🚫 Application des exclusions ($EXCLUDE_PATH)"
+            jq --slurpfile excl "$EXCLUDE_PATH" '. - (($excl[0].repos) // [])' candidates.json > filtered.json
           else
-            echo "✅ labels.json trouvé !"
+            cp candidates.json filtered.json
           fi
 
-      - name: 🔍 Vérifier si le token accède aux repositories et récupérer le dernier repo créé
-        env:
-          GH_TOKEN: ${{ secrets.LABELGITHUB_TOKEN }}
-        run: |
-          echo "🔍 Récupération du dernier repository créé..."
-          # Récupérer les repos triés par date de création (le plus récent en premier)
-          gh api user/repos --paginate --jq 'sort_by(.created_at | fromdateiso8601) | reverse | .[].full_name' > repos_list.txt
-
-          if [ ! -s repos_list.txt ]; then
-            echo "❌ Aucun repository trouvé !"
-            exit 1
+          if [ "$MODE" = "latest" ]; then
+            jq '.[0:1]' filtered.json > final.json
+          else
+            cp filtered.json final.json
           fi
 
-          # Prendre uniquement le premier repo (le plus récent)
-          head -n 1 repos_list.txt > latest_repo.txt
-          echo "✅ Dernier repository créé :"
-          cat latest_repo.txt
+          COUNT=$(jq 'length' final.json)
+          REPOS=$(jq -c . final.json)
+          echo "✅ $COUNT repo(s) à traiter"
+          jq -r '.[]' final.json | sed 's/^/  - /' || true
+          echo "repos=$REPOS" >> "$GITHUB_OUTPUT"
+          echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
-      - name: ⚡ Ne traiter que le dernier repository créé
-        env:
-          GH_TOKEN: ${{ secrets.LABELGITHUB_TOKEN }}
+  sync:
+    name: 🏷️ ${{ matrix.repo }}
+    needs: list-repos
+    if: needs.list-repos.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        repo: ${{ fromJson(needs.list-repos.outputs.repos) }}
+    steps:
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+
+      - name: 🏷️ Synchroniser les labels
+        # Pinner sur un SHA en production: cf. https://github.com/EndBug/label-sync/releases
+        uses: EndBug/label-sync@v2
+        with:
+          config-file: ${{ inputs.labels_path || '.github/config/labels.json' }}
+          repository: ${{ matrix.repo }}
+          delete-other-labels: true
+          dry-run: ${{ inputs.dry_run || false }}
+          token: ${{ secrets.LABELGITHUB_TOKEN }}
+
+  summary:
+    name: 📊 Récapitulatif
+    needs: [list-repos, sync]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📝 Résumé
         run: |
-          echo "🔍 Début du traitement du dernier repository créé..."
-
-          while IFS= read -r repo; do
-            if [[ "$repo" == "djoudj-dev/.gitworkflow" ]]; then
-              echo "⚠️ Ignoré : $repo (repository privé)"
-              continue
-            fi
-
-            echo "📌 Vérification du repository $repo"
-
-            if gh api repos/"$repo" --silent; then
-              echo "✅ Récupération des labels actuels de $repo..."
-
-              # Obtenir la liste des labels existants
-              EXISTING_LABELS=$(gh api repos/"$repo"/labels --jq '.[].name' | tr -d '"')
-
-              # Obtenir la liste des labels définis dans labels.json
-              NEW_LABELS=$(jq -r '.[].name' .github/config/labels.json)
-
-              # Vérifier si tous les labels requis sont déjà présents
-              MISSING_LABELS=$(comm -23 <(echo "$NEW_LABELS" | sort) <(echo "$EXISTING_LABELS" | sort))
-
-              if [ -z "$MISSING_LABELS" ]; then
-                echo "✅ Le repository $repo possède déjà tous les labels requis. Aucune action nécessaire."
-                continue
-              fi
-
-              echo "🔍 Des labels sont manquants, mise à jour du repository..."
-
-              # Trouver les labels à supprimer (ceux qui existent mais ne sont pas définis dans labels.json)
-              LABELS_TO_DELETE=$(comm -23 <(echo "$EXISTING_LABELS" | sort) <(echo "$NEW_LABELS" | sort))
-
-              # Supprimer les labels obsolètes un par un
-              echo "$LABELS_TO_DELETE" | while IFS= read -r label; do
-                if [ -n "$label" ]; then
-                  echo "🗑️ Suppression du label : $label"
-                  gh api -X DELETE repos/"$repo"/labels/"$label" || echo "⚠️ Impossible de supprimer $label"
-                fi
-              done
-
-              echo "✅ Ajout des nouveaux labels pour $repo"
-
-              # Ajouter les nouveaux labels un par un
-              jq -c '.[]' .github/config/labels.json | while IFS= read -r label; do
-                NAME=$(echo "$label" | jq -r ".name")
-                DESCRIPTION=$(echo "$label" | jq -r ".description")
-                COLOR=$(echo "$label" | jq -r ".color")
-
-                # Vérifier si le label existe déjà
-                if echo "$EXISTING_LABELS" | grep -q "^$NAME$"; then
-                  echo "⏩ Label déjà existant : $NAME"
-                else
-                  echo "📌 Ajout du label : $NAME"
-                  gh api -X POST repos/"$repo"/labels \
-                    -H "Accept: application/vnd.github.v3+json" \
-                    -f name="$NAME" \
-                    -f description="$DESCRIPTION" \
-                    -f color="$COLOR" || echo "⚠️ Impossible d'ajouter $NAME"
-                fi
-              done
-
-            else
-              echo "⚠️ Le repo $repo est inaccessible. Il sera ignoré."
-            fi
-          done < latest_repo.txt
+          {
+            echo "## Synchronisation des labels"
+            echo ""
+            echo "| Champ | Valeur |"
+            echo "|---|---|"
+            echo "| Repos ciblés | **${{ needs.list-repos.outputs.count }}** |"
+            echo "| Mode | \`${{ inputs.mode || 'all' }}\` |"
+            echo "| Dry-run | \`${{ inputs.dry_run || false }}\` |"
+            echo "| Statut listing | \`${{ needs.list-repos.result }}\` |"
+            echo "| Statut sync | \`${{ needs.sync.result }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
