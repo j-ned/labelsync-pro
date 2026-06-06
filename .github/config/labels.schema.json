@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/djoudj-dev/labelsync-pro/.github/config/labels.schema.json",
+  "$id": "https://github.com/j-ned/labelsync-pro/.github/config/labels.schema.json",
   "title": "GitHub labels configuration",
   "type": "array",
   "minItems": 1,

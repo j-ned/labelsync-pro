@@ -41,7 +41,7 @@ Le workflow inclut un ensemble complet d'étiquettes prédéfinies pour différe
 
 1. **Cloner ce repository** :
    ```bash
-   git clone https://github.com/djoudj-dev/labelsync-pro.git
+   git clone https://github.com/j-ned/labelsync-pro.git
    ```
 
 2. **Configurer le token GitHub** :
@@ -76,7 +76,7 @@ Ce workflow peut être appelé depuis n'importe quel repo via `workflow_call` :
 ```yaml
 jobs:
   labels:
-    uses: djoudj-dev/labelsync-pro/.github/workflows/manage-labels.yml@master
+    uses: j-ned/labelsync-pro/.github/workflows/manage-labels.yml@master
     with:
       mode: all
       dry_run: false
@@ -160,7 +160,7 @@ The workflow includes a comprehensive set of predefined labels for different typ
 
 1. **Clone this repository**:
    ```bash
-   git clone https://github.com/djoudj-dev/labelsync-pro.git
+   git clone https://github.com/j-ned/labelsync-pro.git
    ```
 
 2. **Configure GitHub token**:
@@ -195,7 +195,7 @@ This workflow can be called from any repo via `workflow_call`:
 ```yaml
 jobs:
   labels:
-    uses: djoudj-dev/labelsync-pro/.github/workflows/manage-labels.yml@master
+    uses: j-ned/labelsync-pro/.github/workflows/manage-labels.yml@master
     with:
       mode: all
       dry_run: false
