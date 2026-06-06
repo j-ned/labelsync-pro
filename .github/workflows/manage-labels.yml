@@ -53,9 +53,10 @@ jobs:
     outputs:
       repos: ${{ steps.collect.outputs.repos }}
       count: ${{ steps.collect.outputs.count }}
+      labels: ${{ steps.collect.outputs.labels }}
     steps:
       - name: 📥 Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 📂 Vérifier le fichier labels
         env:
@@ -78,6 +79,7 @@ jobs:
           GH_TOKEN: ${{ secrets.LABELGITHUB_TOKEN }}
           MODE: ${{ inputs.mode || 'all' }}
           EXCLUDE_PATH: ${{ inputs.exclude_path || '.github/config/exclude.json' }}
+          LABELS_PATH: ${{ inputs.labels_path || '.github/config/labels.json' }}
         run: |
           set -euo pipefail
           echo "🔍 Récupération des repos (mode=$MODE)..."
@@ -107,6 +109,13 @@ jobs:
           echo "repos=$REPOS" >> "$GITHUB_OUTPUT"
           echo "count=$COUNT" >> "$GITHUB_OUTPUT"
 
+          # Transmet le contenu des labels au job sync (évite un checkout par repo)
+          {
+            echo "labels<<__LABELS_EOF__"
+            jq -c . "$LABELS_PATH"
+            echo "__LABELS_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
   sync:
     name: 🏷️ ${{ matrix.repo }}
     needs: list-repos
@@ -118,18 +127,48 @@ jobs:
       matrix:
         repo: ${{ fromJson(needs.list-repos.outputs.repos) }}
     steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v4
-
       - name: 🏷️ Synchroniser les labels
-        # Pinner sur un SHA en production: cf. https://github.com/EndBug/label-sync/releases
-        uses: EndBug/label-sync@v2
-        with:
-          config-file: ${{ inputs.labels_path || '.github/config/labels.json' }}
-          repository: ${{ matrix.repo }}
-          delete-other-labels: true
-          dry-run: ${{ inputs.dry_run || false }}
-          token: ${{ secrets.LABELGITHUB_TOKEN }}
+        env:
+          GH_TOKEN: ${{ secrets.LABELGITHUB_TOKEN }}
+          REPO: ${{ matrix.repo }}
+          LABELS_JSON: ${{ needs.list-repos.outputs.labels }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$LABELS_JSON" > labels.json
+          jq -e 'type == "array" and length > 0' labels.json > /dev/null
+
+          desired="$(jq -r '.[].name' labels.json)"
+          echo "🏷️  $REPO : $(jq 'length' labels.json) labels souhaités (dry_run=$DRY_RUN)"
+
+          # 1) Création / mise à jour de chaque label souhaité (--force = upsert)
+          jq -c '.[]' labels.json | while IFS= read -r label; do
+            name="$(jq -r '.name' <<<"$label")"
+            color="$(jq -r '.color' <<<"$label")"
+            desc="$(jq -r '.description // ""' <<<"$label")"
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "  [dry-run] upsert: $name (#$color)"
+            else
+              gh label create "$name" --repo "$REPO" --color "$color" \
+                --description "$desc" --force
+            fi
+          done
+
+          # 2) Synchro stricte : suppression des labels non listés
+          gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' \
+            | while IFS= read -r existing; do
+                [ -z "$existing" ] && continue
+                if ! grep -Fxq "$existing" <<<"$desired"; then
+                  if [ "$DRY_RUN" = "true" ]; then
+                    echo "  [dry-run] delete: $existing"
+                  else
+                    gh label delete "$existing" --repo "$REPO" --yes
+                    echo "  🗑️  supprimé: $existing"
+                  fi
+                fi
+              done
+
+          echo "✅ $REPO synchronisé"
 
   summary:
     name: 📊 Récapitulatif
